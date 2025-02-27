@@ -58,11 +58,8 @@ sudo apt update && sudo apt install qemu nasm make
 brew install qemu nasm make
 ```
 
-- **Windows (using WSL):**
-
-1. Install WSL and set up a Linux distribution (like Ubuntu)
-2. Follow the Debian/Ubuntu/Mint instructions above inside WSL
-3. **No information available on how to compile directly on Windows**
+- **Windows:**
+ **No information available on how to compile directly on Windows**
 
 ## Usage
 
