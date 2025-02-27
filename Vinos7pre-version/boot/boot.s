@@ -112,7 +112,7 @@ read_command:
     ret
 
 message db ";========================== Bootloader VinuOS v25F7 ==========================;", 13, 10
-        db ";                  Booting VinuOS! Press any key to continue.                 ;", 13, 10
+        db ";                  Booting VinuOS! Press any key to continue                  ;", 13, 10
         db ";=============================================================================;", 0
 
 
