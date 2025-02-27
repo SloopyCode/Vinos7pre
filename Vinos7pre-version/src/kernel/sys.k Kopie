@@ -1,0 +1,300 @@
+[BITS 16]
+[ORG 0x1000]
+
+start:
+    cli
+    ; DS und ES auf CS setzen, damit alle Daten korrekt adressiert werden
+    mov ax, cs
+    mov ds, ax
+    mov es, ax
+    call set_video_mode
+    call clear_screen
+    call print_interface
+    call print_newline
+    call shell
+    jmp $
+
+;-------------------------------------------------
+; Video-Modus (Textmodus 03h) setzen
+;-------------------------------------------------
+set_video_mode:
+    mov ax, 0x03
+    int 0x10
+    ret
+
+;-------------------------------------------------
+; Bildschirm löschen (BIOS-Scroll-Funktion)
+;-------------------------------------------------
+clear_screen:
+    mov ax, 0x0600
+    mov bh, 0x07      ; Attribut: weiß auf schwarz
+    mov cx, 0         ; obere linke Ecke (0,0)
+    mov dx, 0x184F    ; untere rechte Ecke (Zeile 24, Spalte 79)
+    int 0x10
+    ret
+
+;-------------------------------------------------
+; Zeichenkette ausgeben (DS:SI muss auf einen 0-terminierten String zeigen)
+;-------------------------------------------------
+print_string:
+    mov ah, 0x0E
+.print_char:
+    lodsb
+    cmp al, 0
+    je .done
+    int 0x10
+    jmp .print_char
+.done:
+    ret
+
+;-------------------------------------------------
+; Neue Zeile (CR+LF)
+;-------------------------------------------------
+print_newline:
+    mov ah, 0x0E
+    mov al, 0x0D    ; CR
+    int 0x10
+    mov al, 0x0A    ; LF
+    int 0x10
+    ret
+
+;-------------------------------------------------
+; Überschrift & Menü anzeigen
+;-------------------------------------------------
+print_interface:
+    mov si, header
+    call print_string
+    call print_newline
+    mov si, menu
+    call print_string
+    call print_newline
+    ret
+
+;-------------------------------------------------
+; Shell: Prompt anzeigen, Befehl einlesen & ausführen
+;-------------------------------------------------
+shell:
+    mov si, prompt
+    call print_string
+    call read_command
+    call print_newline
+    call execute_command
+    jmp shell
+
+;-------------------------------------------------
+; Befehl einlesen (in command_buffer)
+;-------------------------------------------------
+read_command:
+    mov di, command_buffer
+    xor cx, cx
+.read_loop:
+    mov ah, 0x00
+    int 0x16
+    cmp al, 0x0D         ; Enter
+    je .done_read
+    cmp al, 0x08         ; Backspace
+    je .handle_backspace
+    cmp cx, 150
+    jge .done_read
+    stosb
+    mov ah, 0x0E
+    int 0x10
+    inc cx
+    jmp .read_loop
+.handle_backspace:
+    cmp di, command_buffer
+    je .read_loop
+    dec di
+    dec cx
+    mov ah, 0x0E
+    mov al, 0x08
+    int 0x10
+    mov al, ' '
+    int 0x10
+    mov al, 0x08
+    int 0x10
+    jmp .read_loop
+.done_read:
+    mov byte [di], 0
+    ret
+
+;-------------------------------------------------
+; Befehl auswerten
+;-------------------------------------------------
+execute_command:
+    mov si, command_buffer
+    ; HELP: exakte Eingabe "HELP"
+    cmp byte [si], 'H'
+    je check_help
+    ; P: exakte Eingabe "P" -> Kernel laden (von Disk) und Jump
+    cmp byte [si], 'P'
+    je check_p
+    ; CLS: "CL" -> Bildschirm löschen
+    cmp byte [si], 'C'
+    je check_cls
+    ; REBOOT: "RE"
+    cmp byte [si], 'R'
+    je check_reboot
+    ; SHUTDOWN: "SH"
+    cmp byte [si], 'S'
+    je check_shutdown
+    ; NOP: exakte Eingabe "NO" -> Warte-Schleife bis 'q' gedrückt wird
+    cmp byte [si], 'N'
+    je check_nop
+    ; BANNER: "BA" -> Interface neu anzeigen
+    cmp byte [si], 'B'
+    je check_banner
+    call unknown_command
+    ret
+
+;-------------------------------------------------
+; HELP: "HELP"
+;-------------------------------------------------
+check_help:
+    cmp byte [si+1], 'E'
+    jne unknown_command
+    cmp byte [si+2], 'L'
+    jne unknown_command
+    cmp byte [si+3], 'P'
+    jne unknown_command
+    cmp byte [si+4], 0
+    jne unknown_command
+    call do_help
+    ret
+
+do_help:
+    mov si, help_msg
+    call print_string
+    call print_newline
+    ret
+
+;-------------------------------------------------
+; P: "P" -> Kernel von Disk laden und zu 0x2000 springen
+;-------------------------------------------------
+check_p:
+    cmp byte [si+1], 0
+    jne unknown_command
+    ; Lade 1 Sektor von Disk (CHS: Cylinder 0, Head 0, Sector 2) in den Speicher bei 0x2000
+    mov ah, 0x02
+    mov al, 1        ; 1 Sektor lesen
+    mov ch, 0
+    mov cl, 2
+    mov dh, 0
+    ; DL sollte idealerweise den Bootlaufwerkwert enthalten – wird hier vorausgesetzt
+    mov bx, 0x2000   ; Zieladresse
+    int 0x13
+    jmp 0x2000
+
+;-------------------------------------------------
+; CLS: "CL" -> Bildschirm löschen
+;-------------------------------------------------
+check_cls:
+    cmp byte [si+1], 'L'
+    je do_cls
+    call unknown_command
+    ret
+
+do_cls:
+    call clear_screen
+    ret
+
+;-------------------------------------------------
+; REBOOT: "RE"
+;-------------------------------------------------
+check_reboot:
+    cmp byte [si+1], 'E'
+    je do_reboot
+    call unknown_command
+    ret
+
+do_reboot:
+    db 0xEA
+    dw 0x0000
+    dw 0xFFFF
+    ret
+
+;-------------------------------------------------
+; SHUTDOWN: "SH"
+;-------------------------------------------------
+check_shutdown:
+    cmp byte [si+1], 'H'
+    je do_shutdown
+    call unknown_command
+    ret
+
+do_shutdown:
+    mov ax, 0x5307
+    mov bx, 0x0001
+    mov cx, 0x0003
+    int 0x15
+    ret
+
+;-------------------------------------------------
+; NOP: "NO" -> Warte-Schleife bis 'q' gedrückt wird
+;-------------------------------------------------
+check_nop:
+    cmp byte [si+1], 'O'
+    je nop_command
+    call unknown_command
+    ret
+
+nop_command:
+.loop_nop:
+    mov ah, 0x01
+    int 0x16
+    jz .continue_nop
+    mov ah, 0x00
+    int 0x16
+    cmp al, 'q'
+    je .done_nop
+.continue_nop:
+    jmp .loop_nop
+.done_nop:
+    ret
+
+;-------------------------------------------------
+; BANNER: "BA" -> Interface neu anzeigen
+;-------------------------------------------------
+check_banner:
+    cmp byte [si+1], 'A'
+    je do_banner
+    call unknown_command
+    ret
+
+do_banner:
+    call print_interface
+    call print_newline
+    ret
+
+;-------------------------------------------------
+; Unbekannter Befehl
+;-------------------------------------------------
+unknown_command:
+    mov si, unknown_msg
+    call print_string
+    call print_newline
+    ret
+
+;-------------------------------------------------
+; Daten (Strings)
+;-------------------------------------------------
+header      db "============================= VinuOS v0.3 ====================================", 0
+menu        db "Commands:", 0x0D,0x0A, \
+              "HELP   - Show help", 0x0D,0x0A, \
+              "P      - Load kernel", 0x0D,0x0A, \
+              "CL     - Clear screen", 0x0D,0x0A, \
+              "REBOOT - Reboot system", 0x0D,0x0A, \
+              "SHUT   - Shutdown system", 0x0D,0x0A, \
+              "NO     - Wait until 'q' is pressed", 0x0D,0x0A, \
+              "BA     - Show interface", 0, 
+prompt      db "[VinuOS] > ", 0
+command_buffer db 150 dup(0)
+unknown_msg db "Unknown command.", 0
+help_msg    db "Available commands:", 0x0D,0x0A, \
+              "HELP   - Show help", 0x0D,0x0A, \
+              "P      - Load kernel", 0x0D,0x0A, \
+              "CL     - Clear screen", 0x0D,0x0A, \
+              "REBOOT - Reboot system", 0x0D,0x0A, \
+              "SHUT   - Shutdown system", 0x0D,0x0A, \
+              "NO     - Wait until 'q' is pressed", 0x0D,0x0A, \
+              "BA     - Show interface", 0x0D,0x0A, 0
